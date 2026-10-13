@@ -1,0 +1,62 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: label-studio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-label_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-label_studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  label-studio:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    image: label-studio-cloud-only:latest
+    container_name: label-studio
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount the GCP service-account key read-only into the container.
+      - ${GCS_CREDENTIALS_FILE:-./gcs-sa.json}:/opt/gcs-sa.json:ro
+    environment:
+      DJANGO_DB: postgresql
+      POSTGRE_NAME: ${POSTGRES_DB:-label_studio}
+      POSTGRE_USER: ${POSTGRES_USER:-label_studio}
+      POSTGRE_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+      POSTGRE_HOST: postgres
+      POSTGRE_PORT: 5432
+
+      # Never expose or autodetect files from the container filesystem.
+      LOCAL_FILES_SERVING_ENABLED: "false"
+      LOCAL_FILES_DOCUMENT_ROOT: /var/empty/label-studio
+
+      # Django default storage → Google Cloud Storage.
+      # Used for application media (avatars, exports, etc.).
+      STORAGE_TYPE: gcs
+      STORAGE_GCS_BUCKET_NAME: ${GCS_APP_BUCKET:-label-studio-app}
+      STORAGE_GCS_PROJECT_ID: ${GCP_PROJECT_ID}
+      GOOGLE_APPLICATION_CREDENTIALS: /opt/gcs-sa.json
+
+      DISABLE_SIGNUP_WITHOUT_LINK: "true"
+      SECRET_KEY: ${LABEL_STUDIO_SECRET_KEY:-replace-with-a-long-random-value}
+      USERNAME: ${LABEL_STUDIO_USERNAME:-admin@example.com}
+      PASSWORD: ${LABEL_STUDIO_PASSWORD:-change-me-in-.env}
+      CSRF_TRUSTED_ORIGINS: http://localhost:8080
+      USE_ENFORCE_CSRF_CHECKS: "true"
+      # GCS is a real public endpoint, so SSRF protection is safe to leave on.
+      SSRF_PROTECTION_ENABLED: "true"
+
+volumes:
+  postgres-data:
