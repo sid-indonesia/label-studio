@@ -16,10 +16,7 @@ services:
       retries: 20
 
   label-studio:
-    build:
-      context: ./docker
-      dockerfile: Dockerfile
-    image: label-studio-cloud-only:latest
+    image: ghcr.io/sid-indonesia/label-studio:latest
     container_name: label-studio
     restart: unless-stopped
     depends_on:
