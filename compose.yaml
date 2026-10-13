@@ -1,0 +1,105 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: label-studio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-label_studio}
+      POSTGRES_USER: ${POSTGRES_USER:-label_studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: label-studio-rustfs
+    restart: unless-stopped
+    environment:
+      RUSTFS_VOLUMES: /data/rustfs{0..3}
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: "true"
+      # The four erasure paths share one Docker volume in this dev stack.
+      # Use separate physical disks instead of this bypass in production.
+      RUSTFS_UNSAFE_BYPASS_DISK_CHECK: "true"
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-change-me-in-.env}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # RustFS console
+    volumes:
+      - rustfs-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # RustFS client container. It creates the bucket used by the local stack.
+  rustfs-init:
+    image: rustfs/rc:latest
+    container_name: label-studio-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      "rc alias set local http://rustfs:9000 $$RUSTFS_ACCESS_KEY $$RUSTFS_SECRET_KEY
+      && rc mb --ignore-existing local/label-studio-app
+      && rc mb --ignore-existing local/label-studio-demo"
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-change-me-in-.env}
+    restart: "no"
+
+  label-studio:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile
+    image: label-studio-cloud-only:latest
+    container_name: label-studio
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    ports:
+      - "8080:8080"
+    environment:
+      DJANGO_DB: postgresql
+      POSTGRE_NAME: ${POSTGRES_DB:-label_studio}
+      POSTGRE_USER: ${POSTGRES_USER:-label_studio}
+      POSTGRE_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-.env}
+      POSTGRE_HOST: postgres
+      POSTGRE_PORT: 5432
+
+      # Never expose or autodetect files from the container filesystem.
+      LOCAL_FILES_SERVING_ENABLED: "false"
+      LOCAL_FILES_DOCUMENT_ROOT: /var/empty/label-studio
+
+      # Label Studio's application media uses the S3-compatible RustFS API.
+      STORAGE_TYPE: s3
+      STORAGE_AWS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      STORAGE_AWS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-change-me-in-.env}
+      STORAGE_AWS_BUCKET_NAME: label-studio-app
+      STORAGE_AWS_ENDPOINT_URL: http://rustfs:9000
+      STORAGE_AWS_REGION_NAME: us-east-1
+      STORAGE_AWS_S3_USE_SSL: "false"
+
+      DISABLE_SIGNUP_WITHOUT_LINK: "true"
+      SECRET_KEY: ${LABEL_STUDIO_SECRET_KEY:-replace-with-a-long-random-value}
+      USERNAME: ${LABEL_STUDIO_USERNAME:-admin@example.com}
+      PASSWORD: ${LABEL_STUDIO_PASSWORD:-change-me-in-.env}
+      CSRF_TRUSTED_ORIGINS: http://localhost:8080
+      USE_ENFORCE_CSRF_CHECKS: "true"
+      SSRF_PROTECTION_ENABLED: "false"
+
+volumes:
+  postgres-data:
+  rustfs-data:
